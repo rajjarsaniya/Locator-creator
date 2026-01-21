@@ -9,8 +9,6 @@ document.getElementById("start").addEventListener("click", async () => {
   window.close();
 });
 
-
-
 function startLocatorMode() {
   if (window.__locatorModeActive) return;
   window.__locatorModeActive = true;
@@ -42,10 +40,27 @@ function startLocatorMode() {
 
     const el = e.target;
 
-    const playwright = selectBestPlaywrightLocator(el);
-    const selenium = selectBestSeleniumLocator(el);
+    let playwright = selectBestPlaywrightLocator(el);
+    let selenium = selectBestSeleniumLocator(el);
 
-    showCopyModal(playwright, selenium);
+    if (!playwright) {
+      playwright = {
+        code: `page.locator("${getCssSelector(el) || el.tagName.toLowerCase()}")`,
+        matches: -1,
+        score: 0
+      };
+    }
+
+    if (!selenium) {
+      selenium = {
+        code: `driver.findElement(By.xpath("${buildIndexedXPath(el)}"));`,
+        matches: -1,
+        score: 0
+      };
+    }
+
+showCopyModal(playwright, selenium);
+
   }
 
   document.addEventListener("mousemove", move);
@@ -56,151 +71,161 @@ function startLocatorMode() {
     window.__locatorModeActive = false;
   }
 
-  // ================= PLAYWRIGHT (UNCHANGED LOGIC) =================
+  // ================= PLAYWRIGHT (UPDATED LOGIC) =================
 
-  function selectBestPlaywrightLocator(el) {
-    const candidates = [];
+  // ================= PLAYWRIGHT (STANDARD SCORING) =================
+function selectBestPlaywrightLocator(el) {
+  const candidates = [];
+  const text = el.innerText?.trim();
 
-    const testId = el.getAttribute("data-testid");
-    if (testId) {
-      candidates.push({ code: `page.getByTestId("${testId}")`, matches: 1, score: 100 });
+  // Helper to add only unique candidate
+  function addCandidate(code, selectorQuery, score) {
+    const matches = document.querySelectorAll(selectorQuery).length;
+    if (matches === 1) {
+      candidates.push({ code, matches, score });
     }
-
-    const role = el.getAttribute("role");
-    const text = el.innerText?.trim();
-    if (role && text) {
-      const count = countByXPath(`//*[@role="${role}" and normalize-space()="${text}"]`);
-      candidates.push({
-        code: `page.getByRole("${role}", { name: "${text}" })`,
-        matches: count,
-        score: 95
-      });
-    }
-
-    if (text) {
-      const count = countByXPath(`//*[normalize-space()="${text}"]`);
-      candidates.push({
-        code: `page.getByText("${text}", { exact: true })`,
-        matches: count,
-        score: 85
-      });
-    }
-
-    const css = getCssSelector(el);
-    if (css) {
-      const list = [...document.querySelectorAll(css)];
-
-      if (list.length === 1) {
-        candidates.push({
-          code: `page.locator("${css}")`,
-          matches: 1,
-          score: 70
-        });
-
-      } else if (list.length > 1) {
-        const scoped = getScopedCssSelector(el, css);
-        if (scoped && document.querySelectorAll(scoped).length === 1) {
-          candidates.push({
-            code: `page.locator("${scoped}")`,
-            matches: 1,
-            score: 68
-          });
-        } else {
-          candidates.push({
-            code: `page.locator("${css}").nth(${list.indexOf(el)})`,
-            matches: 1,
-            score: 60
-          });
-        }
-      }
-    }
-
-
-    const href = el.getAttribute("href");
-    if (href) {
-      const count = document.querySelectorAll(`a[href="${href}"]`).length;
-      candidates.push({
-        code: `page.locator('a[href="${href}"]')`,
-        matches: count,
-        score: 90
-      });
-    }
-
-    return pickBest(candidates);
   }
 
-  // ================= SELENIUM (UNCHANGED LOGIC) =================
+  // 1️⃣ data-testid
+  const testId = el.getAttribute("data-testid");
+  if (testId) addCandidate(`page.getByTestId("${testId}")`, `[data-testid="${testId}"]`, 100);
 
-  function selectBestSeleniumLocator(el) {
-    const candidates = [];
+  // 2️⃣ id
+  if (el.id) addCandidate(`page.locator("#${el.id}")`, `#${CSS.escape(el.id)}`, 99);
 
-    if (el.id) {
-      candidates.push({ code: `driver.findElement(By.id("${el.id}"));`, matches: 1, score: 85 });
-    }
+  // 3️⃣ label / aria-label
+  const label = el.labels?.[0]?.innerText?.trim();
+  if (label) addCandidate(`page.getByLabel("${label}")`, `label:has-text("${label}")`, 98);
+  const aria = el.getAttribute("aria-label");
+  if (aria) addCandidate(`page.getByLabel("${aria}")`, `[aria-label="${aria}"]`, 98);
 
-    if (el.name) {
-      const count = document.getElementsByName(el.name).length;
-      candidates.push({ code: `driver.findElement(By.name("${el.name}"));`, matches: count, score: 80 });
-    }
+  // 4️⃣ placeholder
+  const placeholder = el.getAttribute("placeholder");
+  if (placeholder) addCandidate(`page.getByPlaceholder("${placeholder}")`, `[placeholder="${placeholder}"]`, 95);
 
-    if (el.tagName === "A" && el.innerText?.trim()) {
-      const text = el.innerText.trim();
-      const count = countByXPath(`//a[normalize-space()="${text}"]`);
-      candidates.push({
-        code: `driver.findElement(By.linkText("${text}"));`,
-        matches: count,
-        score: 75
-      });
-    }
+  // 5️⃣ alt (images)
+  const alt = el.getAttribute("alt");
+  if (alt) addCandidate(`page.getByAltText("${alt}")`, `[alt="${alt}"]`, 94);
 
-    const css = getCssSelector(el);
-    if (css) {
-      const list = document.querySelectorAll(css);
+  // 6️⃣ role + text
+  const role = el.getAttribute("role");
+  if (role && text) {
+    const xpath = `//*[@role="${role}" and normalize-space()="${text}"]`;
+    const matches = countByXPath(xpath);
+    if (matches === 1) candidates.push({ code: `page.getByRole("${role}", { name: "${text}" })`, matches, score: 93 });
+  }
 
-      if (list.length === 1) {
-        candidates.push({
-          code: `driver.findElement(By.cssSelector("${css}"));`,
-          matches: 1,
-          score: 70
-        });
-      } else if (list.length > 1) {
-        const scoped = getScopedCssSelector(el, css);
-        if (scoped && document.querySelectorAll(scoped).length === 1) {
-          candidates.push({
-            code: `driver.findElement(By.cssSelector("${scoped}"));`,
-            matches: 1,
-            score: 68
-          });
-        }
-      }
-    }
+  // 7️⃣ exact text
+  if (text) {
+    const xpath = `//*[normalize-space()="${text}"]`;
+    const matches = countByXPath(xpath);
+    if (matches === 1) candidates.push({ code: `page.getByText("${text}", { exact: true })`, matches, score: 90 });
+  }
 
+  // 8️⃣ input type + name
+  if (el.tagName === "INPUT" && el.type && el.name) {
+    const selector = `input[type="${el.type}"][name="${el.name}"]`;
+    addCandidate(`page.locator('${selector}')`, selector, 88);
+  }
 
-    candidates.push({
-      code: `driver.findElement(By.xpath("${buildIndexedXPath(el)}"));`,
-      matches: 1,
-      score: 50
-    });
+  // 9️⃣ css selector (unique)
+  const css = getCssSelector(el);
+  if (css) addCandidate(`page.locator("${css}")`, css, 80);
 
-    const href = el.getAttribute("href");
-    if (href) {
-      const count = document.querySelectorAll(`a[href="${href}"]`).length;
-      candidates.push({
-        code: `driver.findElement(By.cssSelector("a[href='${href}']"));`,
-        matches: count,
-        score: 85
-      });
+  // 🔟 fallback: absolute xpath
+  candidates.push({ code: `page.locator("${getScopedCssSelector(el, buildIndexedXPath(el)) || el.tagName.toLowerCase()}")`, matches: 1, score: 50 });
+
+  return pickBest(candidates);
 }
 
+// ================= SELENIUM (STANDARD SCORING) =================
+function selectBestSeleniumLocator(el) {
+  const candidates = [];
+  const text = el.innerText?.trim();
 
-    return pickBest(candidates);
+  // Helper to add only unique candidate
+  function addCandidate(code, selectorQuery, score) {
+    const matches = document.querySelectorAll(selectorQuery).length;
+    if (matches === 1) {
+      candidates.push({ code, matches, score });
+    }
   }
+
+  // 1️⃣ id
+  if (el.id) addCandidate(`driver.findElement(By.id("${el.id}"));`, `#${CSS.escape(el.id)}`, 100);
+
+  // 2️⃣ data-testid
+  const testId = el.getAttribute("data-testid");
+  if (testId) addCandidate(`driver.findElement(By.cssSelector('[data-testid="${testId}"]'));`, `[data-testid="${testId}"]`, 98);
+
+  // 3️⃣ label xpath
+  const label = el.labels?.[0]?.innerText?.trim();
+  if (label) {
+    const xpath = `//label[normalize-space()="${label}"]/following::input[1]`;
+    const matches = countByXPath(xpath);
+    if (matches === 1) candidates.push({ code: `driver.findElement(By.xpath("${xpath}"));`, matches, score: 95 });
+  }
+
+  // 4️⃣ name
+  if (el.name) {
+    const matches = document.getElementsByName(el.name).length;
+    if (matches === 1) candidates.push({ code: `driver.findElement(By.name("${el.name}"));`, matches, score: 92 });
+  }
+
+  // 5️⃣ placeholder
+  const placeholder = el.getAttribute("placeholder");
+  if (placeholder) {
+    const xpath = `//*[@placeholder="${placeholder}"]`;
+    const matches = countByXPath(xpath);
+    if (matches === 1) candidates.push({ code: `driver.findElement(By.xpath("${xpath}"));`, matches, score: 90 });
+  }
+
+  // 6️⃣ title
+  const title = el.getAttribute("title");
+  if (title) {
+    const xpath = `//*[@title="${title}"]`;
+    const matches = countByXPath(xpath);
+    if (matches === 1) candidates.push({ code: `driver.findElement(By.xpath("${xpath}"));`, matches, score: 88 });
+  }
+
+  // 7️⃣ link text
+  if (el.tagName === "A" && text) {
+    const xpath = `//a[normalize-space()="${text}"]`;
+    const matches = countByXPath(xpath);
+    if (matches === 1) candidates.push({ code: `driver.findElement(By.linkText("${text}"));`, matches, score: 85 });
+  }
+
+  // 8️⃣ input type + name
+  if (el.tagName === "INPUT" && el.type && el.name) {
+    const selector = `input[type="${el.type}"][name="${el.name}"]`;
+    addCandidate(`driver.findElement(By.cssSelector("${selector}"));`, selector, 88);
+  }
+
+  // 9️⃣ css selector (unique)
+  const css = getCssSelector(el);
+  if (css) addCandidate(`driver.findElement(By.cssSelector("${css}"));`, css, 80);
+
+  // 🔟 fallback: absolute xpath
+  candidates.push({ code: `driver.findElement(By.xpath("${buildIndexedXPath(el)}"));`, matches: 1, score: 50 });
+
+  return pickBest(candidates);
+}
 
   // ================= CORE HELPERS =================
 
   function pickBest(list) {
-    return list.filter(l => l.matches === 1).sort((a, b) => b.score - a.score)[0];
+    if (!list.length) return null;
+
+    // Prefer unique locators
+    const unique = list.filter(l => l.matches === 1);
+    if (unique.length) {
+      return unique.sort((a, b) => b.score - a.score)[0];
+    }
+
+    // Fallback: best-scored locator even if not unique
+    return list.sort((a, b) => b.score - a.score)[0];
   }
+
 
   function countByXPath(xpath) {
     return document.evaluate(
@@ -213,10 +238,28 @@ function startLocatorMode() {
   }
 
   function getCssSelector(el) {
-    if (el.id) return `#${el.id}`;
-    if (el.className) {
-      return `${el.tagName.toLowerCase()}.${el.className.trim().split(/\s+/).join(".")}`;
+    if (el.id && typeof el.id === "string") {
+      return `#${CSS.escape(el.id)}`;
     }
+
+    // className can be string OR SVGAnimatedString
+    let className = el.className;
+
+    if (typeof className === "string") {
+      const classes = className.trim().split(/\s+/).filter(Boolean);
+      if (classes.length) {
+        return `${el.tagName.toLowerCase()}.${classes.map(c => CSS.escape(c)).join(".")}`;
+      }
+    }
+
+    // SVG elements
+    if (className && typeof className === "object" && typeof className.baseVal === "string") {
+      const classes = className.baseVal.trim().split(/\s+/).filter(Boolean);
+      if (classes.length) {
+        return `${el.tagName.toLowerCase()}.${classes.map(c => CSS.escape(c)).join(".")}`;
+      }
+    }
+
     return null;
   }
 
@@ -235,23 +278,16 @@ function startLocatorMode() {
     return path;
   }
 
-  // ================= PARENT SCOPED CSS =================
   function getScopedCssSelector(el, baseCss) {
     let parent = el.parentElement;
-
     while (parent && parent !== document.body) {
-      if (parent.id) {
-        return `#${parent.id} ${baseCss}`;
-      }
-
-      if (parent.className && parent.className.trim()) {
+      if (parent.id) return `#${parent.id} ${baseCss}`;
+      if (parent.className) {
         const cls = parent.className.trim().split(/\s+/)[0];
         return `.${cls} ${baseCss}`;
       }
-
       parent = parent.parentElement;
     }
-
     return null;
   }
 
