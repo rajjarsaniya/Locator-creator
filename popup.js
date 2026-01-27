@@ -133,12 +133,22 @@ function selectBestPlaywrightLocator(el) {
   if (css) addCandidate(`page.locator("${css}")`, css, 80);
 
   // 🔟 fallback: absolute xpath
-  candidates.push({ code: `page.locator("${getScopedCssSelector(el, buildIndexedXPath(el)) || el.tagName.toLowerCase()}")`, matches: 1, score: 50 });
+  candidates.push({
+  code: `page.locator("${getCssSelector(el) || el.tagName.toLowerCase()}")`,
+  matches: 1,
+  score: 50
+});
 
   return pickBest(candidates);
 }
 
 // ================= SELENIUM (STANDARD SCORING) =================
+
+
+
+
+
+
 function selectBestSeleniumLocator(el) {
   const candidates = [];
   const text = el.innerText?.trim();
@@ -205,8 +215,22 @@ function selectBestSeleniumLocator(el) {
   const css = getCssSelector(el);
   if (css) addCandidate(`driver.findElement(By.cssSelector("${css}"));`, css, 80);
 
-  // 🔟 fallback: absolute xpath
-  candidates.push({ code: `driver.findElement(By.xpath("${buildIndexedXPath(el)}"));`, matches: 1, score: 50 });
+  // 🔟 strong relative XPath (preferred)
+  const strongXPath = buildStrongRelativeXPath(el);
+  if (strongXPath) {
+    candidates.push({
+      code: `driver.findElement(By.xpath("${strongXPath}"));`,
+      matches: 1,
+      score: 85
+    });
+  }
+
+  // ⓫ absolute indexed XPath (LAST resort)
+  candidates.push({
+    code: `driver.findElement(By.xpath("${buildIndexedXPath(el)}"));`,
+    matches: 1,
+    score: 30
+  });
 
   return pickBest(candidates);
 }
@@ -277,6 +301,48 @@ function selectBestSeleniumLocator(el) {
     }
     return path;
   }
+
+
+  // ================= STRONG RELATIVE XPATH =================
+  function buildStrongRelativeXPath(el) {
+    if (!el || el.nodeType !== 1) return null;
+
+    const tag = el.tagName.toLowerCase();
+
+    const attrs = [
+      "data-testid",
+      "data-test",
+      "aria-label",
+      "name",
+      "title",
+      "placeholder",
+      "role",
+      "type",
+      "value"
+    ];
+
+    for (const attr of attrs) {
+      const val = el.getAttribute(attr);
+      if (val) {
+        const xpath = `//${tag}[@${attr}="${val}"]`;
+        if (countByXPath(xpath) === 1) {
+          return xpath;
+        }
+      }
+    }
+
+    const text = el.innerText?.trim();
+    if (text && text.length < 80) {
+      const xpath = `//${tag}[normalize-space()="${text}"]`;
+      if (countByXPath(xpath) === 1) {
+        return xpath;
+      }
+    }
+
+    return null;
+  }
+
+
 
   function getScopedCssSelector(el, baseCss) {
     let parent = el.parentElement;
@@ -398,7 +464,7 @@ function showCopyModal(playwright, selenium) {
       <input type="checkbox" id="sel" checked />
       <strong>Selenium</strong>
     </label>
-
+        
     <pre style="
       background:#fafbfc;
       padding:10px;
